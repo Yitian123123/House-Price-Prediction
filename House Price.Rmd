@@ -1,0 +1,414 @@
+---
+title: "House Price"
+author: "Yitian Fu"
+date: "11/11/2021"
+output:
+  html_document:
+    df_print: paged
+---
+# 1.	Introduction to the data 
+All the information about this project comes from kaggle: https://www.kaggle.com/c/house-prices-advanced-regression-techniques/submissions. In this project, I want to make predictions about the house price by knowing the details about the house. For example, when the house built and how many bathrooms it has can affect the house price. There are two files: train and test. They have the same amount of predictors, the only difference is the train data has the SalePrice of each observed house, but the test data does not have. So in this project, I would use the train data to fit lots of different models, and then make predictions for observations in the test.
+
+#	2.	Explain the raw data
+There are 1459 observation in the test data with 80 predictors. There are 1460 observations in the train data with 80 predictors and 1 response variable. The two data files have some missing values. Before I build models and make predictions, I will do a data cleaning to fill the missing data. 
+
+#	3.	Explain how to cleaned the data 
+First, I combined train and test together because I want to deal them together. Then I calculate the proportion of the missing values in each column, if there are more than 5% missing data in that column, I will delete that column. Next, I found some variables are factors and they were showed as characters in the data frame, so I just convert them to factors. Finally, I use the `missForest` package to fill the missing values.
+
+```{r}
+train<-read.csv("train.csv")
+test<-read.csv("test.csv")
+test$SalePrice<-rep(0,nrow(test))
+```
+
+```{r}
+#combine them to do data cleaning together
+all.data<-rbind(train,test)
+# if that variable has more than 5% missing data, then delete it
+for (i in 1:81){
+  x<-sum(is.na(all.data[,i]))/2919
+  if (x>=0.05){
+    print(colnames(all.data[i]))
+  }
+}
+
+```
+```{r}
+all.data.1<-all.data[,-81]
+all.data.1<- subset(all.data.1, select = -c(LotFrontage,Alley,FireplaceQu,GarageType,GarageYrBlt,GarageFinish,GarageQual,GarageCond,PoolQC,Fence,MiscFeature))
+```
+
+```{r}
+all.data.1[sapply(all.data.1, is.character)] <- lapply(all.data.1[sapply(all.data.1, is.character)], as.factor)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(missForest)
+set.seed(100)
+all.data.1.miss <- prodNA(all.data.1, noNA = 0.2) 
+forest_data <- missForest(all.data.1.miss, verbose = TRUE)
+```
+
+```{r}
+final_data<-forest_data$ximp
+#final_data_file<-write.csv(final_data, "final_data_file.csv")
+sum(is.na(final_data))
+```
+
+```{r}
+summary(final_data)
+```
+
+```{r}
+final_data.1 <- model.matrix( ~ ., data=final_data)[,-1]
+sum(is.na(final_data.1))
+```
+
+
+# Machine Learning Methods
+
+## KNN Method
+
+```{r}
+#scale the data
+scaled_data<-scale(final_data.1)
+na_column<-c()
+for (i in (1:216)){
+  if (sum(is.na(scaled_data[,i]))!=0) {
+    na_column<-append(na_column,i)
+  }
+}
+scaled_data_1<-scaled_data[,-na_column]
+sum(is.na(scaled_data_1))
+```
+
+```{r}
+X.scaled.train <- scaled_data_1[1:nrow(train),]
+y.train<-train$SalePrice
+x.scaled.test<-scaled_data_1[(nrow(train)+1):nrow(scaled_data_1),]
+```
+
+```{r}
+# choose k by 10 fold CV
+library(FNN)
+set.seed(10) ## the seed can be arbitrary but we use 10 for the sake of consistency
+fold.index <- cut(sample(1:nrow(X.scaled.train)), breaks=10, labels=FALSE)
+K.vt <- c(10,20,30,40,50,60,70,80,90,100)
+error.k <- rep(0, length(K.vt))
+counter <- 0
+for(k in K.vt){
+counter <- counter + 1 # counter for error.k
+mse <- rep(0,10) # initialize an mse object to record the MSE for each fold
+for(i in 1:10){
+pred.out <- knn.reg(X.scaled.train[fold.index!=i,], X.scaled.train[fold.index==i,],
+train$SalePrice[fold.index!=i], k=k)
+mse[i] <- mean((pred.out$pred - train$SalePrice[fold.index==i])^2)
+}
+error.k[counter] <- sum(mse)/10
+}
+plot(c(10,20,30,40,50,60,70,80,90,100), error.k, type="b", xlab="K", ylab="10-fold CV")
+```
+
+### CV MSE for KNN
+```{r}
+print(error.k)
+#choose k=10 because it has the smallest MSE
+```
+
+
+```{r}
+knn_prediction <- knn.reg(train = X.scaled.train, 
+                    test = x.scaled.test,
+                    y = y.train,
+                    k = 10)$pred
+# ID<- 1461:2919
+# SalePrice <- knn_prediction
+# knn_prediction <- data.frame(ID,SalePrice)
+# write.csv(knn_prediction,"knn_prediction.csv", row.names = FALSE)
+```
+
+## Linear Regression
+### Fit a linear regression model using all the predictors except Id
+```{r}
+whole_train<-final_data[1:1460,-1]
+whole_train$SalePrice<-y.train
+whole_train<-as.data.frame(whole_train)
+whole_test<-final_data[1461:2919,-1]
+whole_test<-as.data.frame(whole_test)
+lm.fit<- lm(SalePrice~., data = whole_train)
+#summary(lm.fit)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.fit)
+```
+
+From the Normal Q-Q plot, it looks like a short-tail dist,so I want to change Y al log(Y). Also, the 524th observation looks like an ouliter because its $\sqrt{standarized \ residuals}$ is greater than 3, so I will try to delete this.
+
+```{r}
+new.lm.fit<- lm(log(SalePrice)~., data = whole_train[-524,])
+par(mfrow=c(2,2))
+plot(new.lm.fit)
+```
+
+After these remedies, it looks better because there is none observation's $\sqrt{standarized \ residuals}$ greater than 3, and in the normal Q-Q plot those points fall along that line.
+
+```{r}
+summary(new.lm.fit)
+```
+
+### CV MSE
+```{r warning=FALSE}
+# choose k by 10 fold CV
+whole_train.new<-whole_train[-524,]
+whole_train.new<-model.matrix( ~ ., data=whole_train.new)[,-1]
+whole_train.new<- as.data.frame(whole_train.new)
+whole_test<-model.matrix( ~ ., data=whole_test)[,-1]
+whole_test<- as.data.frame(whole_test)
+whole_test.new<-final_data[1461:2919,-1]
+
+fold.index <- cut(sample(1:nrow(X.scaled.train)), breaks=10, labels=FALSE)
+error.k <- rep(0, length(K.vt))
+mse <- rep(0,10)
+for (i in 1:10){
+  lm.fit.cv<- lm(log(SalePrice)~., data = whole_train.new[fold.index != i,])
+  pred.cv <- predict(lm.fit.cv, whole_train.new[fold.index == i,])
+  mse[i] <- mean((exp(pred.cv) - whole_train.new$SalePrice[fold.index==i])^2)
+}
+print(mean(mse, na.rm=TRUE))
+```
+
+```{r warning=FALSE}
+new.lm.fit<- lm(log(SalePrice)~., data = whole_train.new)
+lm.pred<- predict(new.lm.fit, newdata = whole_test)
+# Id <- 1461:2919
+# SalePrice <- exp(lm.pred)
+# linear_regression <- data.frame(Id,SalePrice)
+# write.csv(linear_regression,"linear_regression.csv", row.names = FALSE)
+```
+
+## Ridge
+
+```{r}
+library(glmnet)
+final_data.1 <- model.matrix( ~ ., data=final_data)[,-1]
+X<-final_data.1[1:1460,]
+test<-final_data.1[1461:2919, ]
+ridge.model<- glmnet(X,y.train, alpha = 0)
+```
+
+### ridge CV MSE
+
+```{r}
+cv.out<- cv.glmnet(X,y.train, alpha = 0, nfolds = 10)
+cv.out
+```
+
+```{r}
+cv.out$lambda.min
+```
+
+```{r}
+min(cv.out$cvm)
+```
+```{r}
+plot(cv.out)
+```
+```{r}
+coef(ridge.model, s=cv.out$lambda.min)
+```
+These are the coefficients' estimated, value by using ridge, "." means that is equal to 0.
+
+```{r}
+ridge<-predict(ridge.model, s = cv.out$lambda.min, newx = test)
+# Id <- 1461:2919
+# SalePrice <- ridge
+# ridge <- data.frame(Id,SalePrice)
+# names(ridge) <- c("Id","SalePrice")
+# write.csv(ridge,"ridge.csv", row.names = FALSE)
+```
+
+
+## Lasso
+```{r}
+lasso.model<- glmnet(X,y.train, alpha = 1)
+cv.out<- cv.glmnet(X,y.train, alpha = 1, nfolds = 10)
+cv.out
+```
+
+```{r}
+cv.out$lambda.min
+```
+### Lasso CV MSE
+```{r}
+min(cv.out$cvm)
+```
+```{r}
+plot(cv.out)
+```
+
+I think lasso is better for model interpretation part and lasso has smaller training MSE.
+
+```{r}
+coef(lasso.model, s=cv.out$lambda.min)
+```
+
+These are the coefficients' estimated, value by using ridge, "." means that is equal to 0.
+
+```{r}
+lasso.pred<-predict(lasso.model, s= cv.out$lambda.min, newx = test)
+# Id <- 1461:2919
+# SalePrice <- lasso.pred
+# lasso <- data.frame(Id,SalePrice)
+# names(lasso) <- c("Id","SalePrice")
+# write.csv(lasso,"lasso .csv", row.names = FALSE)
+```
+
+
+## Regression Trees
+
+```{r}
+library(tree) 
+new_data<-whole_train[-524,]
+tree.fit<-tree(log(SalePrice)~.,data= whole_train) 
+tree.fit
+```
+```{r}
+summary(tree.fit)
+```
+
+```{r}
+par(mfrow=c(1,1)) 
+plot(tree.fit) 
+text(tree.fit, pretty = 0)
+```
+
+### Explain the model
+
+When OverallQuall is smaller tan 6.145, it goes left, otherwise it goes right.
+
+```{r}
+set.seed(481) 
+cv.housing<-cv.tree(tree.fit,K=10) 
+par(mfrow=c(1,2)) 
+plot(cv.housing$k,cv.housing$dev, type="b") 
+
+plot(cv.housing$size,cv.housing$dev, type="b")
+```
+
+### Choose parameter by cv
+
+```{r}
+best.size<-cv.housing$size[which.min(cv.housing$dev)] 
+best.size
+```
+```{r}
+prune.housing<-prune.tree(tree.fit, best=best.size) 
+par(mfrow=c(1,1))
+plot(prune.housing)
+text(prune.housing, pretty = 0)
+```
+
+
+
+### prediction
+
+```{r}
+housing.pred<-predict(prune.housing,newdata=whole_test.new) 
+# Id <- 1461:2919
+# SalePrice <- exp(housing.pred)
+# regressiontree <- data.frame(Id,SalePrice)
+# names(regressiontree) <- c("Id","SalePrice") 
+# write.csv(regressiontree,"regressiontree .csv", row.names = FALSE)
+```
+
+
+## Bagging
+
+```{r}
+library(randomForest)
+bag.fit<-randomForest(log(SalePrice)~.,data=new_data, mytry=68, importance=TRUE,ntree=5000)
+bag.fit
+```
+
+### choose tuning parameter and interpretation
+
+There are total 69 variables, but one is the response variable. So the number of predictors equal to 68, which means mytry=p=68.I also choose the max ntree as 5000. The most important variables are OverQuall and Neighborhood.
+
+```{r}
+importance(bag.fit)
+```
+
+```{r}
+varImpPlot(bag.fit)
+```
+
+### prediction
+```{r}
+bag.pred<-predict(bag.fit,newdata=whole_test.new) 
+Id <- 1461:2919
+SalePrice <- exp(bag.pred)
+bagging <- data.frame(Id,SalePrice)
+names(bagging) <- c("Id","SalePrice") 
+write.csv(bagging,"bagging .csv", row.names = FALSE)
+```
+
+## Random Forest
+```{r}
+rf.fit<-randomForest(log(SalePrice)~.,data=whole_train,mytry=round(sqrt(68)),importance=TRUE, n.tree=5000)
+rf.fit
+```
+
+### choose tuning parameter and interpretation
+Mytry=sqrt(p)=sqrt(68) because there are 68 predictors
+GrLivArea, OverQual and neighborhood are the most important predictors.
+
+```{r}
+importance(rf.fit)
+```
+
+```{r}
+varImpPlot(rf.fit)
+```
+
+
+
+### prediction
+```{r}
+rf.pred<-predict(rf.fit,newdata=whole_test.new)
+# Id <- 1461:2919
+# SalePrice <- exp(rf.pred)
+# randomfroest <- data.frame(Id,SalePrice)
+# names(randomfroest) <- c("Id","SalePrice") 
+# write.csv(randomfroest,"randomfroest .csv", row.names = FALSE)
+```
+
+## Boosting
+```{r}
+library(gbm)
+gbm.cv.fit<-gbm(log(SalePrice)~.,data=whole_train, distribution="gaussian", shrinkage=0.01,n.tree=5000,interaction.depth=4,cv.folds=10)
+gbm.cv.fit
+```
+
+### choose tuning parameter and interpretation
+choose the size of n.tree by cv which is 1026.Also, OverallQual,Neighborhood, and GrLivArea are the most important predictors.
+
+```{r}
+which.min(gbm.cv.fit$cv.error)
+```
+
+```{r}
+summary(gbm.cv.fit)
+```
+
+### prediction
+```{r}
+gbm.pred<-predict(gbm.cv.fit,newdata=whole_test.new,n.trees=which.min(gbm.cv.fit$cv.error))
+# Id <- 1461:2919
+# SalePrice <- exp(gbm.pred)
+# boosting <- data.frame(Id,SalePrice)
+# names(boosting) <- c("Id","SalePrice") 
+# write.csv(boosting,"boosting .csv", row.names = FALSE)
+```
+
